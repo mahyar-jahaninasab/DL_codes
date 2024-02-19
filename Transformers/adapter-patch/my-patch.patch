@@ -1,0 +1,84 @@
+diff --git a/transformers/src/transformers/models/roberta/modeling_roberta.py b/src/transformers/models/roberta/modeling_roberta.py
+index 75b728af6..830c03fe3 100644
+--- a/transformers/src/transformers/models/roberta/modeling_roberta.py
++++ b/transformers/src/transformers/models/roberta/modeling_roberta.py
+@@ -22,6 +22,7 @@ import torch
+ import torch.utils.checkpoint
+ from torch import nn
+ from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
++import torch.nn.functional as F
+ 
+ from ...activations import ACT2FN, gelu
+ from ...modeling_outputs import (
+@@ -61,6 +62,26 @@ ROBERTA_PRETRAINED_MODEL_ARCHIVE_LIST = [
+     # See all RoBERTa models at https://huggingface.co/models?filter=roberta
+ ]
+ 
++class Adapter(nn.Module):
++  '''This is a feedforward adapter layer with a residual connection base on
++  the input from previous layer output
++   '''
++  def __init__(self,input_shape,hidden_size=64):
++    super(Adapter,self).__init__()
++
++    self.linear1 = nn.Linear(input_shape, hidden_size)
++    self.linear2 = nn.Linear(hidden_size,input_shape)
++
++    nn.init.xavier_uniform_(self.linear1.weight)
++    nn.init.xavier_uniform_(self.linear2.weight)
++
++  def forward(self,input_tensor):
++
++    output = F.gelu(self.linear1(input_tensor))
++    output = self.linear2(output)
++
++    return output + input_tensor
++
+ 
+ class RobertaEmbeddings(nn.Module):
+     """
+@@ -291,9 +312,10 @@ class RobertaSelfOutput(nn.Module):
+         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+         self.dropout = nn.Dropout(config.hidden_dropout_prob)
+-
++        self.adapter = Adapter(config.hidden_size)
+     def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor) -> torch.Tensor:
+         hidden_states = self.dense(hidden_states)
++        hidden_states = self.adapter(hidden_states)
+         hidden_states = self.dropout(hidden_states)
+         hidden_states = self.LayerNorm(hidden_states + input_tensor)
+         return hidden_states
+@@ -358,7 +380,7 @@ class RobertaIntermediate(nn.Module):
+             self.intermediate_act_fn = ACT2FN[config.hidden_act]
+         else:
+             self.intermediate_act_fn = config.hidden_act
+-
++        
+     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+         hidden_states = self.dense(hidden_states)
+         hidden_states = self.intermediate_act_fn(hidden_states)
+@@ -372,11 +394,14 @@ class RobertaOutput(nn.Module):
+         self.dense = nn.Linear(config.intermediate_size, config.hidden_size)
+         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+         self.dropout = nn.Dropout(config.hidden_dropout_prob)
++        self.adapter = Adapter(config.hidden_size)
+ 
+     def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor) -> torch.Tensor:
+         hidden_states = self.dense(hidden_states)
++        hidden_states = self.adapter(hidden_states)
+         hidden_states = self.dropout(hidden_states)
+         hidden_states = self.LayerNorm(hidden_states + input_tensor)
++        
+         return hidden_states
+ 
+ 
+@@ -464,6 +489,8 @@ class RobertaLayer(nn.Module):
+     def feed_forward_chunk(self, attention_output):
+         intermediate_output = self.intermediate(attention_output)
+         layer_output = self.output(intermediate_output, attention_output)
++        
++        
+         return layer_output
+ 
+ 
